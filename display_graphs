@@ -1,0 +1,112 @@
+%% EJI NM — Clean data and visualize county-level Minority, Poverty, and Age 65+
+% Author: David Jaramillo
+% Purpose: Clean EJI dataset, convert county codes to names, and display key metrics.
+
+infile = 'EJI_2024_New_Mexico.csv';
+
+%% 1) Load and clean the dataset
+T = readtable(infile);
+T.Properties.VariableNames = matlab.lang.makeValidName(T.Properties.VariableNames);
+T = standardizeMissing(T, {"","NA","N/A","NaN","null",-999,-9999});
+T = unique(T);
+
+%% 2) Find columns (works with most EJI datasets)
+County  = matchVar(T, ["County","County_Name","CountyName","CNTY","FIPS","GEOID","CountyFIPS","COUNTYFP"]);
+Minority = matchVar(T, ["E_MINRTY","Percent_Minority","Minority","EP_MINRTY"]);
+Poverty  = matchVar(T, ["E_POV200","Poverty","Below200","EP_POV"]);
+Age65    = matchVar(T, ["E_OVER64","E_AGE65","Over64","Age65","EP_AGE65"]);
+
+if County=="" || Minority=="" || Poverty=="" || Age65==""
+    error('Missing required columns (County, Minority, Poverty, or Age65).');
+end
+
+%% 3) Map FIPS/GEOID codes to readable county names
+T.County_Display = toCountyNamesNM(T.(County));
+County = "County_Display";
+
+%% 4) Keep only the needed columns
+S = T(:, [County, Minority, Poverty, Age65]);
+
+% Convert text to numbers and fill missing with means
+for v = string(S.Properties.VariableNames)
+    if v ~= County
+        if ~isnumeric(S.(v)), S.(v) = str2double(string(S.(v))); end
+        S.(v) = fillmissing(S.(v), 'constant', mean(S.(v), 'omitnan'));
+    end
+end
+
+%% 5) Aggregate to county means
+G = groupsummary(S, County, "mean");
+G.Properties.VariableNames = strrep(G.Properties.VariableNames, "mean_", "");
+
+%% 6) Create clean bar charts
+makeBar(G, County, Minority, 'Percent Minority by County', 'Minority_by_County.png');
+makeBar(G, County, Poverty, 'Percent in Poverty (Below 200%) by County', 'Poverty_by_County.png');
+makeBar(G, County, Age65, 'Percent Age 65+ by County', 'Age65_by_County.png');
+
+disp('✅ Graphs created successfully (Minority, Poverty, Age 65+).');
+
+%% ---------- Helper Functions ----------
+function v = matchVar(T, names)
+% Finds first matching column name by pattern
+    v = "";
+    vars = string(T.Properties.VariableNames);
+    for c = string(names)
+        hit = contains(lower(vars), lower(c));
+        if any(hit)
+            v = vars(find(hit,1));
+            return;
+        end
+    end
+end
+
+function names = toCountyNamesNM(raw)
+% Converts numeric FIPS or GEOID to readable New Mexico county names
+    % --- 33 counties ---
+    keys = ["001","003","005","006","007","009","011","013","015","017","019","021","023","025","027","028","029","031","033","035","037","039","041","043","045","047","049","051","053","055","057","059","061"];
+    vals = ["Bernalillo","Catron","Chaves","Cibola","Colfax","Curry","De Baca","Doña Ana","Eddy","Grant","Guadalupe","Harding","Hidalgo","Lea","Lincoln","Los Alamos","Luna","McKinley","Mora","Otero","Quay","Rio Arriba","Roosevelt","Sandoval","San Juan","San Miguel","Santa Fe","Sierra","Socorro","Taos","Torrance","Union","Valencia"];
+    M = containers.Map(cellstr(keys), cellstr(vals));
+
+    s = string(raw);
+    names = strings(size(s));
+
+    for i = 1:numel(s)
+        si = strtrim(s(i));
+
+        % Already a readable name?
+        if any(isstrprop(si,'alpha'))
+            names(i) = si;
+            continue
+        end
+
+        % Extract county code (from GEOID or FIPS)
+        if strlength(si) >= 5 && all(isstrprop(extractBetween(si,1,5),'digit'))
+            code = extractBetween(si,3,5);
+        elseif all(isstrprop(si,'digit'))
+            code = compose('%03d', str2double(si));
+        else
+            code = "";
+        end
+
+        % Map or fallback
+        if code ~= "" && isKey(M, char(code))
+            names(i) = string(M(char(code)));
+        else
+            names(i) = si; % fallback to whatever is there
+        end
+    end
+end
+
+function makeBar(G, countyVar, metricVar, titleTxt, fileName)
+% Clean, sorted horizontal bar plot with county names
+    [vals, idx] = sort(G.(metricVar), "descend");
+    labels = string(G.(countyVar)(idx));
+    figure('Color','w','Position',[100 100 950 600]);
+    barh(vals, 'FaceColor',[0.2 0.4 0.8]);
+    set(gca,'YDir','reverse','YTick',1:numel(labels),'YTickLabel',labels, ...
+             'FontSize',11,'TickLabelInterpreter','none');
+    xlabel(strrep(metricVar,'_',' '));
+    title(titleTxt, 'FontWeight','bold');
+    grid on; box off;
+    exportgraphics(gcf, fileName, 'Resolution', 200);
+end
